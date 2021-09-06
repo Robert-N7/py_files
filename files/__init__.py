@@ -1,5 +1,58 @@
 import os
 import re
+import shutil
+
+
+def fcopy(filename, destination):
+    if os.path.isdir(filename):
+        return shutil.copytree(filename, destination)
+    else:
+        return shutil.copy2(filename, destination)
+
+
+def fmove(filename, destination):
+    return shutil.move(filename, destination)
+
+
+def fdelete(filename, ignore_errors=False, onerror=None):
+    if os.path.isdir(filename):
+        shutil.rmtree(filename, ignore_errors, onerror)
+    else:
+        os.remove(filename)
+
+
+def mkdir(dirname):
+    return os.mkdir(dirname)
+
+
+def fread(filename, mode='r'):
+    with open(filename, mode) as f:
+        return f.readlines()
+
+
+def fwrite(filename, lines, mode='w'):
+    with open(filename, mode) as f:
+        f.writelines(lines)
+
+
+def fappend(filename, lines, mode='a'):
+    with open(filename, mode) as f:
+        f.writelines(lines)
+
+
+def frename(filename, new_name):
+    os.rename(filename, new_name)
+
+
+def fcompare(file1, file2):
+    lines1 = fread(file1)
+    lines2 = fread(file2)
+    if len(lines1) != len(lines2):
+        return False
+    for i in range(len(lines1)):
+        if lines1[i].rstrip() != lines2[i].rstrip():
+            return False
+    return True
 
 
 def which(program):
@@ -73,16 +126,6 @@ def floop(path='.', recurse=True, ext=None, dirs_only=False):
                                 yield FileObject(p, path, file, f, extension)
                         else:
                             yield FileObject(p, path, file, f, extension)
-
-
-def fread(filename, mode='r'):
-    with open(filename, mode) as f:
-        return f.readlines()
-
-
-def fwrite(filename, lines, mode='w'):
-    with open(filename, mode) as f:
-        f.writelines(lines)
 
 
 def find(term=None, path='.', recurse=True, ext=None, dirs_only=False, file_filter=None, line_filter=None, output=True):
