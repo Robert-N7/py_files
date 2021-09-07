@@ -1,21 +1,135 @@
+import glob
 import os
 import re
 import shutil
 
 
-def fcopy(filename, destination):
+def f_pat_translate(pat):
+    """Translate a shell PATTERN to a regular expression.
+    """
+    i = 0
+    n = len(pat)
+    res = ''
+    num_groups = 0
+    while i < n:
+        c = pat[i]
+        i = i+1
+        if c == '*':
+            res = res + '(.*)'
+            num_groups += 1
+        elif c == '?':
+            res = res + '(.)'
+            num_groups += 1
+        elif c == '[':
+            j = i
+            if j < n and pat[j] == '!':
+                j = j+1
+            if j < n and pat[j] == ']':
+                j = j+1
+            while j < n and pat[j] != ']':
+                j = j+1
+            if j >= n:
+                res = res + '\\['
+            else:
+                stuff = pat[i:j].replace('\\','\\\\')
+                i = j+1
+                if stuff[0] == '!':
+                    stuff = '^' + stuff[1:]
+                elif stuff[0] == '^':
+                    stuff = '\\' + stuff
+                res = '%s([%s])' % (res, stuff)
+                num_groups += 1
+        else:
+            res = res + re.escape(c)
+    return res + '\Z(?ms)', num_groups
+
+
+def f_pat_replacer(pat):
+    """Split a shell PATTERN at wildcards into list.
+    """
+    i = k = 0
+    n = len(pat)
+    num_groups = 0
+    s = []
+    while i < n:
+        c = pat[i]
+        if c in ('*', '?'):
+            if k < i:
+                s.append(pat[k:i])
+            s.append(None)
+            k = i + 1
+            num_groups += 1
+        elif c == '[':
+            j = i + 1
+            while j < n and pat[j] != ']':
+                j = j+1
+            if j < n:
+                if k < i:
+                    s.append(pat[k:i])
+                s.append(int(pat[i+1:j]))
+                i = j
+                k = i + 1
+                num_groups += 1
+            else:
+                break
+        i += 1
+    if k < n:
+        s.append(pat[k:n])
+    return s, num_groups
+
+
+def fnmatch(filename, destination, recurse=False):
+    pattern, count = f_pat_translate(filename)
+    if not count:
+        raise FileNotFoundError(filename)
+    dest_list, count2 = f_pat_replacer(destination)
+    for file in floop(filename, recurse):
+        if count2:
+            match = re.match(pattern, file.path)
+            if not match:
+                raise ValueError(f'Invalid regex pattern {pattern}')
+            destination = ''
+            i = 1
+            for x in dest_list:
+                if x is None:
+                    destination += match.group(i)
+                    i += 1
+                elif type(x) is int:
+                    destination += match.group(x + 1)
+                else:
+                    destination += x
+        yield file, destination
+
+
+def fcopy(filename, destination, recurse=False):
+    if not os.path.exists(filename):
+        for x, destination in fnmatch(filename, destination, recurse):
+            if os.path.isdir(x.path):
+                return shutil.copytree(x.path, destination)
+            else:
+                return shutil.copy2(x.path, destination)
     if os.path.isdir(filename):
         return shutil.copytree(filename, destination)
     else:
         return shutil.copy2(filename, destination)
 
 
-def fmove(filename, destination):
-    return shutil.move(filename, destination)
+def fmove(filename, destination, recurse=False):
+    if not os.path.exists(filename):
+        for x, destination in fnmatch(filename, destination, recurse):
+            shutil.move(x.path, destination)
+    else:
+        return shutil.move(filename, destination)
 
 
-def fdelete(filename, ignore_errors=False, onerror=None):
-    if os.path.isdir(filename):
+def fdelete(filename, ignore_errors=False, onerror=None, recurse=False):
+    if not os.path.exists(filename):
+        for x in floop(filename, recurse):
+            if os.path.isdir(x.path):
+                shutil.rmtree(x.path, ignore_errors, onerror)
+            else:
+                os.remove(x.path)
+    elif os.path.isdir(filename):
         shutil.rmtree(filename, ignore_errors, onerror)
     else:
         os.remove(filename)
@@ -30,14 +144,22 @@ def fread(filename, mode='r'):
         return f.readlines()
 
 
-def fwrite(filename, lines, mode='w'):
+def fwrite(filename, lines, mode='w', separator=''):
+    if type(lines) is not str:
+        lines = separator.join(lines)
+    if not lines.endswith('\n'):
+        lines += '\n'
     with open(filename, mode) as f:
-        f.writelines(lines)
+        f.write(lines)
 
 
-def fappend(filename, lines, mode='a'):
+def fappend(filename, lines, mode='a', separator=''):
+    if type(lines) is not str:
+        lines = separator.join(lines)
+    if not lines.endswith('\n'):
+        lines += '\n'
     with open(filename, mode) as f:
-        f.writelines(lines)
+        f.write(lines)
 
 
 def frename(filename, new_name):
@@ -95,7 +217,14 @@ class FileObject:
 
 
 def floop(path='.', recurse=True, ext=None, dirs_only=False):
-    if not os.path.isdir(path):
+    if not os.path.exists(path):
+        for file in glob.iglob(path, recursive=recurse):
+            if os.path.isdir(file) == dirs_only:
+                dir, filename = os.path.split(file)
+                base_name, extension = os.path.splitext(filename)
+                if not ext or extension in ext:
+                    yield FileObject(file, dir, filename, base_name, extension)
+    elif not os.path.isdir(path):
         dir, filename = os.path.split(path)
         p, ext = os.path.splitext(filename)
         yield FileObject(path, dir, filename, p, ext)
@@ -128,7 +257,8 @@ def floop(path='.', recurse=True, ext=None, dirs_only=False):
                             yield FileObject(p, path, file, f, extension)
 
 
-def find(term=None, path='.', recurse=True, ext=None, dirs_only=False, file_filter=None, line_filter=None, output=True):
+def find(term=None, path='.', recurse=True, ext=None, dirs_only=False,
+         file_filter=None, line_filter=None, output=True):
     usages = []
     for file in floop(path, recurse, ext, dirs_only):
         if file_filter is None or file_filter(file):
@@ -186,7 +316,7 @@ def replace(term=None, replace='', replace_func=None,
                             if replace_func:
                                 replacement = replace_func(usage)
                             else:
-                                replacement = line.replace(replace)
+                                replacement = line.replace(line, replace)
                             if replacement is not None and replacement is not line:
                                 if not replacement.endswith('\n'):
                                     replacement += '\n'
